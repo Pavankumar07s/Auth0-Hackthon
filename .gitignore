@@ -1,0 +1,65 @@
+# ─── Secrets & Credentials ────────────────────────────
+.env
+.env.local
+.env.*.local
+*.secret
+auth0/.caregiver_token
+auth0/.caregiver_refresh_token
+
+# ─── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+*.log
+
+# ─── Node.js ─────────────────────────────────────────
+node_modules/
+.next/
+out/
+.vercel
+
+# ─── ML Models & Data ───────────────────────────────
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.h5
+*.pkl
+*.joblib
+wandb/
+
+# ─── Ultralytics (vendored — do not commit) ─────────
+ultralytics/
+
+# ─── Go ──────────────────────────────────────────────
+*.exe
+*.dll
+*.dylib
+
+# ─── IDE ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ─── Logs & Runtime ─────────────────────────────────
+logs/
+*.log
+pids/
+*.pid
+*.seed
+
+# ─── Docker ──────────────────────────────────────────
+docker-compose.override.yml
