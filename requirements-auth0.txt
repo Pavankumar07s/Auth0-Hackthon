@@ -1,0 +1,27 @@
+# Auth0 Python Dependencies for ETMS
+# Install with: pip install -r requirements-auth0.txt
+
+# Auth0 SDKs
+auth0-ai>=0.3.0
+auth0-python>=4.0.0
+
+# FastAPI + ASGI
+fastapi>=0.100.0
+uvicorn>=0.20.0
+
+# HTTP client
+httpx>=0.24.0
+
+# JWT handling
+PyJWT[crypto]>=2.8.0
+python-jose[cryptography]>=3.3.0
+cryptography>=41.0.0
+
+# OpenFGA SDK
+openfga-sdk>=0.5.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Async support
+aiohttp>=3.8.0
