@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+:root {
+  --guardian-bg: #0f172a;
+  --guardian-card: #1e293b;
+  --guardian-text: #e2e8f0;
+  --guardian-muted: #94a3b8;
+  --guardian-teal: #2dd4bf;
+  --guardian-green: #22c55e;
+  --guardian-red: #ef4444;
+  --guardian-amber: #f59e0b;
+  --guardian-blue: #3b82f6;
+  --guardian-border: #334155;
+}
+
+body {
+  background: var(--guardian-bg);
+  color: var(--guardian-text);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+@theme inline {
+  --color-guardian-bg: #0f172a;
+  --color-guardian-card: #1e293b;
+  --color-guardian-text: #e2e8f0;
+  --color-guardian-muted: #94a3b8;
+  --color-guardian-teal: #2dd4bf;
+  --color-guardian-green: #22c55e;
+  --color-guardian-red: #ef4444;
+  --color-guardian-amber: #f59e0b;
+  --color-guardian-blue: #3b82f6;
+  --color-guardian-border: #334155;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--guardian-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--guardian-border);
+  border-radius: 3px;
+}
+
+/* Pulse animation for live indicators */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
