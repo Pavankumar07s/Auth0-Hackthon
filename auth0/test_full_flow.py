@@ -23,6 +23,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Set SKIP_CIBA=1 to skip CIBA test (requires phone approval)
+SKIP_CIBA = os.getenv("SKIP_CIBA", "0") == "1"
+
 
 class TestResults:
     """Track pass/fail/skip for each integration test."""
@@ -181,12 +184,12 @@ def test_token_vault() -> None:
         )
 
         # Slack alert
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         slack_result = post_slack_alert(
             user_token,
             "#elderly-alerts",
-            f"🚨 ETMS Alert: Test Elder detected FALL_DETECTED in Bedroom 1 at {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            f"🚨 ETMS Alert: Test Elder detected FALL_DETECTED in Bedroom 1 at {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
         )
 
         if slack_result.get("ok"):
@@ -205,8 +208,8 @@ def test_token_vault() -> None:
             "primary",
             "ETMS Caregiver Check-in",
             "Automated check-in scheduled by ETMS after fall detection.",
-            datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
         if cal_result.get("ok"):
@@ -247,6 +250,11 @@ def test_ciba() -> None:
     print()
     print("    3. CIBA — Backchannel Authorization for CRITICAL Events")
     print("     " + "-" * 50)
+
+    if SKIP_CIBA:
+        results.record("CIBA: approval flow", "SKIP", "Skipped (SKIP_CIBA=1)")
+        print("     Skipped (set SKIP_CIBA=0 to enable)")
+        return
 
     try:
         from auth0.ciba import (

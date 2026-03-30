@@ -12,7 +12,7 @@ Auth0 Features Used: Fine-Grained Authorization (FGA)
 import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 import sys
 import os
@@ -45,7 +45,7 @@ class AuthorizedContext:
     agent_id: str
     streams: List[DataStream] = field(default_factory=list)
     denied_streams: List[str] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     
     @property
     def authorized_stream_ids(self) -> List[str]:
@@ -129,7 +129,7 @@ class FGAContextRetriever:
                     stream_id=stream_id,
                     stream_type=stream_id,
                     authorized=authorized,
-                    checked_at=datetime.utcnow().isoformat(),
+                    checked_at=datetime.now(timezone.utc).isoformat(),
                 )
                 
                 if authorized:
@@ -224,7 +224,7 @@ class FGAContextRetriever:
                 "spo2": 97,
                 "temperature": 36.6,
                 "activity_level": "low",
-                "last_update": datetime.utcnow().isoformat(),
+                "last_update": datetime.now(timezone.utc).isoformat(),
             },
             "location": {
                 "zone": "living_room",

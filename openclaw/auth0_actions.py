@@ -13,7 +13,7 @@ Auth0 Features Used: Token Vault, CIBA, FGA, Step-Up Auth
 import logging
 import asyncio
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 import sys
 import os
@@ -87,7 +87,7 @@ class Auth0ActionHandler:
         result = {
             "incident_id": incident_id,
             "severity": severity,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "auth0_actions": [],
             "dispatch_status": "pending",
         }

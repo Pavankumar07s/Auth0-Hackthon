@@ -207,10 +207,13 @@ def exchange_token_for_connection(
     Returns:
         The external service access token, or ``None`` on failure.
     """
-    client_id = AUTH0_CUSTOM_API_CLIENT_ID or AUTH0_CLIENT_ID
-    client_secret = AUTH0_CUSTOM_API_CLIENT_SECRET or AUTH0_CLIENT_SECRET
+    # Token Vault client — prefers the custom Token Vault client if configured
+    tv_client_id = AUTH0_CUSTOM_API_CLIENT_ID or AUTH0_CLIENT_ID
+    tv_client_secret = AUTH0_CUSTOM_API_CLIENT_SECRET or AUTH0_CLIENT_SECRET
 
     # --- Strategy 1: Refresh-token exchange ---
+    # The refresh token MUST be exchanged using the client that issued it
+    # (AUTH0_CLIENT_ID). Using a different client triggers "invalid_grant".
     refresh_token = _load_refresh_token()
     if refresh_token:
         try:
@@ -219,8 +222,8 @@ def exchange_token_for_connection(
                     f"https://{AUTH0_DOMAIN}/oauth/token",
                     json={
                         "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
-                        "client_id": client_id,
-                        "client_secret": client_secret,
+                        "client_id": AUTH0_CLIENT_ID,
+                        "client_secret": AUTH0_CLIENT_SECRET,
                         "subject_token": refresh_token,
                         "subject_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
                         "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
@@ -247,14 +250,15 @@ def exchange_token_for_connection(
             logger.error("[TokenVault] Refresh-token exchange HTTP error: %s", e)
 
     # --- Strategy 2: Access-token exchange ---
+    # Uses the Token Vault client (or falls back to main client)
     try:
         with httpx.Client() as client:
             resp = client.post(
                 f"https://{AUTH0_DOMAIN}/oauth/token",
                 json={
                     "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
+                    "client_id": tv_client_id,
+                    "client_secret": tv_client_secret,
                     "subject_token": user_token,
                     "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
                     "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
