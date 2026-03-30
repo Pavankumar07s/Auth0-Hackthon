@@ -43,10 +43,10 @@ type JWK struct {
 
 // AuthMiddleware validates Auth0 JWT tokens for PicoClaw API endpoints.
 type AuthMiddleware struct {
-	domain   string
-	audience string
-	jwks     *JWKS
-	mu       sync.RWMutex
+	domain    string
+	audience  string
+	jwks      *JWKS
+	mu        sync.RWMutex
 	lastFetch time.Time
 	cacheTTL  time.Duration
 }

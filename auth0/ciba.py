@@ -73,28 +73,36 @@ def request_backchannel_authorization(
         }
     ])
 
-    # Binding message shown on Guardian push
+    # Binding message shown on Guardian push (Auth0 CIBA limit: 64 chars)
     binding_message = f"ETMS: {elder_name} - {event_type} at {location}"
-    if len(binding_message) > 128:
-        binding_message = binding_message[:125] + "..."
+    if len(binding_message) > 64:
+        binding_message = binding_message[:61] + "..."
 
-    login_hint = caregiver_id
-    if not caregiver_id.startswith("auth0|") and "@" not in caregiver_id:
-        login_hint = f"iss_sub:https://{AUTH0_DOMAIN}|{caregiver_id}"
+    # Auth0 CIBA expects login_hint as JSON
+    if "@" in caregiver_id:
+        login_hint = json.dumps({"format": "email", "email": caregiver_id})
+    elif caregiver_id.startswith("auth0|") or "|" in caregiver_id:
+        login_hint = json.dumps({
+            "format": "iss_sub",
+            "iss": f"https://{AUTH0_DOMAIN}/",
+            "sub": caregiver_id,
+        })
+    else:
+        login_hint = json.dumps({"format": "iss_sub", "iss": f"https://{AUTH0_DOMAIN}/", "sub": caregiver_id})
 
     try:
         with httpx.Client() as client:
+            request_data = {
+                "client_id": AUTH0_CLIENT_ID,
+                "client_secret": AUTH0_CLIENT_SECRET,
+                "login_hint": login_hint,
+                "scope": "openid",
+                "audience": AUTH0_AUDIENCE,
+                "binding_message": binding_message,
+            }
             resp = client.post(
                 f"https://{AUTH0_DOMAIN}/bc-authorize",
-                data={
-                    "client_id": AUTH0_CLIENT_ID,
-                    "client_secret": AUTH0_CLIENT_SECRET,
-                    "login_hint": login_hint,
-                    "scope": "openid",
-                    "audience": AUTH0_AUDIENCE,
-                    "binding_message": binding_message,
-                    "authorization_details": authorization_details,
-                },
+                data=request_data,
             )
             if resp.status_code == 200:
                 auth_req_id = resp.json().get("auth_req_id")

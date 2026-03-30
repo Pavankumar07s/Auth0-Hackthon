@@ -15,6 +15,8 @@ import logging
 from typing import List
 
 import openfga_sdk
+from openfga_sdk.client import ClientCheckRequest
+from openfga_sdk.credentials import Credentials, CredentialConfiguration
 
 from auth0.config import (
     FGA_API_URL,
@@ -37,9 +39,9 @@ def _get_fga_config() -> openfga_sdk.ClientConfiguration:
     config = openfga_sdk.ClientConfiguration(
         api_url=FGA_API_URL,
         store_id=FGA_STORE_ID,
-        credentials=openfga_sdk.Credentials(
+        credentials=Credentials(
             method="client_credentials",
-            configuration=openfga_sdk.CredentialConfiguration(
+            configuration=CredentialConfiguration(
                 api_issuer="fga.us.auth0.com",
                 api_audience="https://api.us1.fga.dev/",
                 client_id=FGA_CLIENT_ID,
@@ -66,7 +68,7 @@ async def is_authorized(user: str, relation: str, object_name: str) -> bool:
     config = _get_fga_config()
     try:
         async with openfga_sdk.OpenFgaClient(config) as client:
-            body = openfga_sdk.ClientCheckRequest(
+            body = ClientCheckRequest(
                 user=user,
                 relation=relation,
                 object=object_name,
@@ -106,7 +108,7 @@ async def filter_streams_by_permission(
     try:
         async with openfga_sdk.OpenFgaClient(config) as client:
             for stream in streams:
-                body = openfga_sdk.ClientCheckRequest(
+                body = ClientCheckRequest(
                     user=user,
                     relation=relation,
                     object=f"data_stream:{stream}",
@@ -151,7 +153,7 @@ async def batch_check_permissions(
     try:
         async with openfga_sdk.OpenFgaClient(config) as client:
             for check in checks:
-                body = openfga_sdk.ClientCheckRequest(
+                body = ClientCheckRequest(
                     user=user,
                     relation=check["relation"],
                     object=check["object"],

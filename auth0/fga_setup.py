@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import openfga_sdk
+from openfga_sdk.credentials import Credentials, CredentialConfiguration
+from openfga_sdk.client.models import ClientTuple, ClientWriteRequest
 
 from auth0.config import FGA_API_URL, FGA_CLIENT_ID, FGA_CLIENT_SECRET, FGA_STORE_ID
 
@@ -27,9 +29,9 @@ async def setup_fga() -> None:
     config = openfga_sdk.ClientConfiguration(
         api_url=FGA_API_URL,
         store_id=FGA_STORE_ID,
-        credentials=openfga_sdk.Credentials(
+        credentials=Credentials(
             method="client_credentials",
-            configuration=openfga_sdk.CredentialConfiguration(
+            configuration=CredentialConfiguration(
                 api_issuer="fga.us.auth0.com",
                 api_audience="https://api.us1.fga.dev/",
                 client_id=FGA_CLIENT_ID,
@@ -52,7 +54,7 @@ async def setup_fga() -> None:
                     type="data_stream",
                     relations={
                         "viewer": openfga_sdk.Userset(
-                            this=openfga_sdk.DirectUserset(),
+                            this={},
                         ),
                     },
                     metadata=openfga_sdk.Metadata(
@@ -89,10 +91,10 @@ async def setup_fga() -> None:
         writes = []
         for user, relation, obj in tuples:
             writes.append(
-                openfga_sdk.ClientTupleKey(user=user, relation=relation, object=obj)
+                ClientTuple(user=user, relation=relation, object=obj)
             )
 
-        body = openfga_sdk.ClientWriteRequest(writes=writes)
+        body = ClientWriteRequest(writes=writes)
         await client.write(body)
         print(f"  {len(writes)} tuples written successfully")
         print()

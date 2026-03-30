@@ -396,7 +396,9 @@ def test_step_up() -> None:
             redirect_uri="http://localhost:3000/callback",
             state="test-state-123",
         )
-        if "acr_values" in url and "http://schemas.openid.net/pape/policies/2007/06/multi-factor" in url:
+        from urllib.parse import unquote
+        decoded_url = unquote(url)
+        if "acr_values" in url and "http://schemas.openid.net/pape/policies/2007/06/multi-factor" in decoded_url:
             results.record("Step-Up: URL generation", "PASS", "MFA ACR value in authorization URL")
         else:
             results.record("Step-Up: URL generation", "FAIL", f"Missing ACR in URL: {url}")
