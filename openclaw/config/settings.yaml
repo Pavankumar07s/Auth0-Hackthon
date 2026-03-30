@@ -1,0 +1,155 @@
+# ──────────────────────────────────────────────────────
+#  OpenClaw — Autonomous Emergency Orchestration Layer
+#  Safety-critical, policy-driven executor for ETMS
+# ──────────────────────────────────────────────────────
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  # Credentials loaded from .env (MQTT_USERNAME, MQTT_PASSWORD)
+  username: ""
+  password: ""
+  client_id: "openclaw"
+  qos: 1
+  keepalive: 60
+
+  subscribe_topics:
+    vision_agent: "etms/vision_agent/reasoned_event"
+    smartguard: "etms/smartguard/anomaly"
+    health: "etms/floor/+/mobile/+/heart_rate"
+    fire: "etms/sensors/fire"
+    gas: "etms/sensors/gas"
+    voice_response: "etms/openclaw/voice_response"
+
+  publish_prefix: "etms/openclaw"
+
+# ── Escalation Policy ───────────────────────────────────
+policy:
+  # Level 0 — MONITOR: single anomaly, no distress
+  # Level 1 — WARNING: wandering, moderate HR, repeated anomaly
+  # Level 2 — HIGH_RISK: fall + vitals, SpO2 < 92, HR > 140, no movement
+  # Level 3 — CRITICAL: HR < 40 or > 170, SpO2 < 88, fall + unconscious, fire/gas
+
+  thresholds:
+    hr_critical_low: 40
+    hr_critical_high: 170
+    hr_elevated: 140
+    hr_baseline_pct_high: 0.40
+    spo2_critical: 88
+    spo2_warning: 92
+    inactivity_high_risk_seconds: 120
+    inactivity_warning_seconds: 300
+    anomaly_score_warning: 0.3
+    anomaly_score_high: 0.6
+
+  # Voice confirmation before escalation (Alexa)
+  voice_confirmation:
+    enabled: true
+    timeout_seconds: 30
+    applicable_levels: ["HIGH_RISK"]
+    skip_for_levels: ["CRITICAL"]
+    message: "It looks like you may need help. Are you okay? Please say yes if you are fine."
+
+  # Escalation timers
+  escalation_timers:
+    warning_to_high_risk_seconds: 300
+    high_risk_to_critical_seconds: 30
+
+# ── Resident Medical Profile ────────────────────────────
+resident:
+  id: "R-001"
+  name: "Pavan kumar Yadav"
+  age: 75
+  address: "Army Institute of Technology, Pune"
+  floor: 1
+  emergency_contacts:
+    - name: "Charan Tej Yadav"
+      phone: "+919110342313"
+      relationship: "Friend"
+      telegram_chat_id: "6268065762"
+  medical_history:
+    conditions: []
+    allergies: ["Peanuts", "Shellfish"]
+    medications: []
+    blood_type: ""
+    notes: ""
+  baseline:
+    heart_rate: 72
+    spo2: 97
+
+# ── Action Handlers ─────────────────────────────────────
+actions:
+  # Home Assistant REST API for automations
+  homeassistant:
+    url: "http://localhost:8123"
+    # Token loaded from .env (HA_TOKEN)
+    token: ""
+    alexa_media_player: "media_player.alexa_sala_s_echo_dot"
+
+  # Telegram (direct Bot API — no PicoClaw dependency)
+  telegram:
+    enabled: true
+    # Credentials loaded from .env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS)
+    bot_token: ""
+    chat_ids: []
+
+  # Emergency services (Twilio phone calls)
+  emergency:
+    # Set to "production" to enable real Twilio calls
+    mode: "production"
+    # mode: "production"
+    # Twilio credentials — get from https://console.twilio.com
+    # Credentials loaded from .env (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+    # TWILIO_FROM_NUMBER, TWILIO_TO_NUMBER)
+    twilio_account_sid: ""
+    twilio_auth_token: ""
+    twilio_from_number: ""
+    emergency_to_number: ""
+    # Custom TwiML message (optional — a good default is built in)
+    twiml_message: ""
+    # Public URL for Twilio conversational webhooks (e.g. ngrok).
+    # When set, emergency calls use interactive speech recognition
+    # so responders can ask questions about the patient.
+    # Example: "https://abc123.ngrok-free.app"
+    # Loaded from .env (_URL) if set there.
+    public_url: "https://unoxidative-pseudoanarchistic-jeremiah.ngrok-free.dev"
+
+# ── LLM Summarization ──────────────────────────────────
+llm:
+  # Use Ollama for summarization (NOT for decisions)
+  provider: "ollama"
+  model: "qwen2.5:3b"
+  base_url: "http://localhost:11434"
+  timeout: 30
+  # LLM is ADVISORY — never overrides policy engine
+  purpose: "summarization_only"
+
+# ── Telemetry ───────────────────────────────────────────
+telemetry:
+  # Live streaming during emergencies
+  stream_interval_seconds: 5
+  enabled: true
+  topic: "etms/openclaw/telemetry"
+
+# ── Incident Replay ────────────────────────────────────
+replay:
+  # Auto-generate incident timelines
+  enabled: true
+  window_before_seconds: 300
+  window_after_seconds: 60
+  storage_dir: "logs/replays"
+
+# ── Daily Report ────────────────────────────────────────
+daily_report:
+  enabled: true
+  # Send at 9 PM
+  schedule_hour: 21
+  schedule_minute: 0
+  topic: "etms/openclaw/daily_report"
+
+# ── Service ─────────────────────────────────────────────
+service:
+  rest_port: 8200
+  heartbeat_interval: 30
+  log_level: "INFO"
+  log_file: "logs/openclaw.log"
