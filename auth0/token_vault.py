@@ -328,7 +328,7 @@ def post_slack_alert(
         Dict with ``ok`` status and response details.
     """
     slack_token = exchange_token_for_connection(
-        user_token, "slack", "chat:write channels:read"
+        user_token, "sign-in-with-slack", "chat:write channels:read"
     )
     if not slack_token:
         return {"ok": False, "error": "[TokenVault] Could not obtain Slack token"}
@@ -432,7 +432,7 @@ def get_connected_accounts_status(user_token: str) -> dict:
     status = {}
     for conn, scopes in [
         ("google-oauth2", "https://www.googleapis.com/auth/calendar"),
-        ("slack", "chat:write channels:read"),
+        ("sign-in-with-slack", "chat:write channels:read"),
     ]:
         token = exchange_token_for_connection(user_token, conn, scopes)
         status[conn] = {
