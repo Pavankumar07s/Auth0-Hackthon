@@ -63,3 +63,4 @@ pids/
 
 # ─── Docker ──────────────────────────────────────────
 docker-compose.override.yml
+auth0/.slack_bot_token

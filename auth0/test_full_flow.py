@@ -185,10 +185,12 @@ def test_token_vault() -> None:
 
         # Slack alert
         from datetime import datetime, timezone
+        from auth0.config import SLACK_DEFAULT_CHANNEL
 
+        slack_channel = SLACK_DEFAULT_CHANNEL or "#elderly-alerts"
         slack_result = post_slack_alert(
             user_token,
-            "#elderly-alerts",
+            slack_channel,
             f"🚨 ETMS Alert: Test Elder detected FALL_DETECTED in Bedroom 1 at {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
         )
 

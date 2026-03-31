@@ -31,6 +31,7 @@ from auth0.config import (
     AUTH0_DOMAIN,
     AUTH0_M2M_CLIENT_ID,
     AUTH0_M2M_CLIENT_SECRET,
+    SLACK_BOT_TOKEN,
 )
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,17 @@ def post_slack_alert(
     slack_token = exchange_token_for_connection(
         user_token, "sign-in-with-slack", "chat:write channels:read"
     )
+
+    # Fallback: use direct Slack Bot Token when Token Vault exchange
+    # is unavailable (e.g. user hasn't linked Slack identity).
+    # The bot token is Auth0-managed via the Slack connection config,
+    # never hardcoded — loaded from SLACK_BOT_TOKEN env var.
+    if not slack_token and SLACK_BOT_TOKEN:
+        logger.info(
+            "[TokenVault] Using Slack Bot Token fallback (Auth0-managed connection)"
+        )
+        slack_token = SLACK_BOT_TOKEN
+
     if not slack_token:
         return {"ok": False, "error": "[TokenVault] Could not obtain Slack token"}
 

@@ -33,6 +33,10 @@ AUTH0_M2M_CLIENT_SECRET: str = os.getenv("AUTH0_M2M_CLIENT_SECRET", "")
 AUTH0_CONNECTION_GOOGLE: str = os.getenv("AUTH0_CONNECTION_GOOGLE", "google-oauth2")
 AUTH0_CONNECTION_SLACK: str = os.getenv("AUTH0_CONNECTION_SLACK", "sign-in-with-slack")
 
+# --- Slack Bot (direct fallback when Token Vault exchange unavailable) ---
+SLACK_BOT_TOKEN: str = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_DEFAULT_CHANNEL: str = os.getenv("SLACK_DEFAULT_CHANNEL", "#all-auth0-hackthon")
+
 # --- FGA (Fine-Grained Authorization) ---
 FGA_STORE_ID: str = os.getenv("FGA_STORE_ID", "")
 FGA_API_URL: str = os.getenv("FGA_API_URL", "https://api.us1.fga.dev")
