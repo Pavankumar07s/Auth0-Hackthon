@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 import requests
@@ -739,11 +740,252 @@ class EmergencyHandler:
         return {"success": True, "mode": "production", "packet": packet}
 
 
+class SlackHandler:
+    """Send alerts to Slack via Auth0 Token Vault.
+
+    Uses the caregiver's federated Slack token (exchanged through
+    Auth0 Token Vault) to post messages. Falls back to a direct
+    Slack Bot Token when the Token Vault exchange is unavailable.
+
+    Auth0 feature: Token Vault (Slack integration)
+    """
+
+    def __init__(
+        self,
+        default_channel: str = "",
+        mqtt_publish_fn: Any | None = None,
+    ) -> None:
+        self._default_channel = default_channel
+        self._mqtt_publish = mqtt_publish_fn
+        self._available = False
+
+        # Lazy-import auth0 module (may not be installed in all envs)
+        try:
+            from auth0.token_vault import post_slack_alert
+            from auth0.config import SLACK_DEFAULT_CHANNEL
+
+            self._post_alert = post_slack_alert
+            if not self._default_channel:
+                self._default_channel = SLACK_DEFAULT_CHANNEL or "#elderly-alerts"
+            self._available = True
+            logger.info(
+                "SlackHandler (Auth0 Token Vault) configured: channel=%s",
+                self._default_channel,
+            )
+        except ImportError:
+            logger.warning(
+                "SlackHandler: auth0 package not available — Slack alerts disabled"
+            )
+
+    def execute(
+        self, action: str, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Send alert to Slack channel via Auth0 Token Vault.
+
+        Auth0 feature: Token Vault exchanges caregiver's federated
+        Slack token securely without exposing raw credentials.
+        """
+        if not self._available:
+            return {"success": False, "error": "auth0_not_available"}
+
+        message = self._format_slack_message(context)
+        channel = context.get("slack_channel", self._default_channel)
+        user_token = context.get("auth0_token", "")
+
+        try:
+            result = self._post_alert(
+                user_token=user_token,
+                channel=channel,
+                message=message,
+            )
+            success = result.get("ok", False)
+
+            if self._mqtt_publish:
+                self._mqtt_publish(
+                    "etms/openclaw/slack_sent",
+                    {
+                        "action": action,
+                        "channel": channel,
+                        "success": success,
+                        "auth0_feature": "token_vault",
+                    },
+                )
+
+            logger.info(
+                "Slack alert via Token Vault: channel=%s success=%s",
+                channel,
+                success,
+            )
+            return {
+                "success": success,
+                "channel": channel,
+                "auth0_feature": "token_vault",
+            }
+        except Exception as e:
+            logger.error("Slack alert failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def _format_slack_message(self, context: dict[str, Any]) -> str:
+        """Format alert for Slack with rich context."""
+        level = context.get("level_name", "UNKNOWN")
+        room = context.get("room", "unknown")
+        person = context.get("person_name", "Resident")
+        incident_id = context.get("incident_id", "")
+        reasons = context.get("reasons", [])
+
+        emoji = {
+            "CRITICAL": ":rotating_light:",
+            "HIGH_RISK": ":warning:",
+            "WARNING": ":zap:",
+            "MONITOR": ":information_source:",
+        }.get(level, ":bell:")
+
+        lines = [
+            f"{emoji} *ETMS {level} ALERT*",
+            f"*Person:* {person}  |  *Location:* {room}",
+        ]
+
+        if reasons:
+            lines.append("*Reasons:*")
+            for r in reasons:
+                lines.append(f"  • {r}")
+
+        hr = context.get("heart_rate")
+        spo2 = context.get("spo2")
+        if hr is not None:
+            lines.append(f"*Heart Rate:* {hr} bpm")
+        if spo2 is not None:
+            lines.append(f"*SpO2:* {spo2}%")
+
+        if incident_id:
+            lines.append(f"_Incident: {incident_id}_")
+
+        lines.append("_Secured by Auth0 Token Vault_")
+        return "\n".join(lines)
+
+
+class CalendarHandler:
+    """Create caregiver check-in events via Auth0 Token Vault.
+
+    Uses the caregiver's federated Google token (exchanged through
+    Auth0 Token Vault) to create Calendar events for follow-up.
+
+    Auth0 feature: Token Vault (Google Calendar integration)
+    """
+
+    def __init__(
+        self,
+        calendar_id: str = "primary",
+        mqtt_publish_fn: Any | None = None,
+    ) -> None:
+        self._calendar_id = calendar_id
+        self._mqtt_publish = mqtt_publish_fn
+        self._available = False
+
+        try:
+            from auth0.token_vault import create_google_calendar_event
+
+            self._create_event = create_google_calendar_event
+            self._available = True
+            logger.info(
+                "CalendarHandler (Auth0 Token Vault) configured: calendar=%s",
+                self._calendar_id,
+            )
+        except ImportError:
+            logger.warning(
+                "CalendarHandler: auth0 package not available — Calendar events disabled"
+            )
+
+    def execute(
+        self, action: str, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create a Google Calendar check-in event via Auth0 Token Vault.
+
+        Auth0 feature: Token Vault exchanges the caregiver's
+        federated Google token to create calendar events.
+        """
+        if not self._available:
+            return {"success": False, "error": "auth0_not_available"}
+
+        from datetime import datetime, timedelta, timezone as tz
+
+        level = context.get("level_name", "UNKNOWN")
+        person = context.get("person_name", "Resident")
+        room = context.get("room", "unknown")
+        incident_id = context.get("incident_id", "")
+        reasons = context.get("reasons", [])
+        user_token = context.get("auth0_token", "")
+
+        now = datetime.now(tz.utc)
+
+        # Scale follow-up urgency by severity
+        if level == "CRITICAL":
+            duration = 60
+            prefix = "🚨 EMERGENCY"
+        elif level == "HIGH_RISK":
+            duration = 45
+            prefix = "⚠️ HIGH RISK"
+        else:
+            duration = 30
+            prefix = "⚡ Alert"
+
+        summary = f"{prefix}: Check on {person} ({room})"
+        description = (
+            f"ETMS {level} incident {incident_id}\n"
+            f"Person: {person}\n"
+            f"Location: {room}\n"
+            f"Reasons: {', '.join(reasons)}\n\n"
+            f"This event was auto-created by ETMS via Auth0 Token Vault.\n"
+            f"Please follow up with the resident."
+        )
+        start = now.isoformat()
+        end = (now + timedelta(minutes=duration)).isoformat()
+
+        try:
+            result = self._create_event(
+                user_token=user_token,
+                calendar_id=self._calendar_id,
+                summary=summary,
+                description=description,
+                start_time=start,
+                end_time=end,
+            )
+            success = result.get("ok", False)
+
+            if self._mqtt_publish:
+                self._mqtt_publish(
+                    "etms/openclaw/calendar_created",
+                    {
+                        "action": action,
+                        "event_id": result.get("event_id"),
+                        "success": success,
+                        "auth0_feature": "token_vault",
+                    },
+                )
+
+            logger.info(
+                "Calendar event via Token Vault: success=%s event=%s",
+                success,
+                result.get("event_id"),
+            )
+            return {
+                "success": success,
+                "event_id": result.get("event_id"),
+                "auth0_feature": "token_vault",
+            }
+        except Exception as e:
+            logger.error("Calendar event creation failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+
 class ActionDispatcher:
     """Routes actions to the appropriate handler.
 
     Centralized dispatch point called by the OpenClaw engine
     after the policy engine produces a decision.
+
+    Auth0 integration: SlackHandler and CalendarHandler use
+    Auth0 Token Vault for secure third-party API access.
     """
 
     def __init__(
@@ -751,21 +993,32 @@ class ActionDispatcher:
         ha_handler: HomeAssistantHandler | None = None,
         telegram_handler: TelegramHandler | None = None,
         emergency_handler: EmergencyHandler | None = None,
+        slack_handler: SlackHandler | None = None,
+        calendar_handler: CalendarHandler | None = None,
     ) -> None:
         self._ha = ha_handler or HomeAssistantHandler()
         self._telegram = telegram_handler or TelegramHandler()
         self._emergency = emergency_handler or EmergencyHandler()
+        self._slack = slack_handler or SlackHandler()
+        self._calendar = calendar_handler or CalendarHandler()
 
         self._action_routing: dict[str, ActionHandler] = {
+            # Home Assistant actions
             "unlock_door": self._ha,
             "activate_siren": self._ha,
             "activate_lights": self._ha,
             "voice_check": self._ha,
             "push_notification": self._ha,
+            # Telegram (direct Bot API)
             "notify_caregiver": self._telegram,
             "sms_caregiver": self._telegram,
+            # Emergency services
             "emergency_call": self._emergency,
             "send_medical_packet": self._emergency,
+            # Auth0 Token Vault — Slack alerts
+            "notify_slack": self._slack,
+            # Auth0 Token Vault — Google Calendar events
+            "create_calendar_event": self._calendar,
         }
 
     def dispatch(

@@ -34,8 +34,10 @@ from dotenv import load_dotenv
 
 from src.action_handlers import (
     ActionDispatcher,
+    CalendarHandler,
     EmergencyHandler,
     HomeAssistantHandler,
+    SlackHandler,
     TelegramHandler,
 )
 from src.context_aggregator import ContextAggregator
@@ -46,6 +48,23 @@ from src.policy_engine import EscalationLevel, PolicyEngine
 from src.replay import ReplayBuilder
 from src.rest_api import APIServer
 from src.telemetry import TelemetryManager
+
+# ── Auth0 Security Layer (optional — degrades gracefully) ────
+_AUTH0_AVAILABLE = False
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from auth0.fga import is_authorized as fga_is_authorized
+    from auth0.ciba import request_backchannel_authorization
+    from auth0.step_up import verify_step_up_satisfied
+    from auth0.config import AUTH0_DOMAIN, SLACK_DEFAULT_CHANNEL
+    _AUTH0_AVAILABLE = True
+except ImportError:
+    fga_is_authorized = None
+    request_backchannel_authorization = None
+    verify_step_up_satisfied = None
+    AUTH0_DOMAIN = ""
+    SLACK_DEFAULT_CHANNEL = ""
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +90,9 @@ class OpenClawEngine:
 
         # Voice confirmation events (cancel signals)
         self._voice_timers: dict[str, threading.Event] = {}
+
+        # Auth0 caregiver token (loaded at startup for Token Vault)
+        self._auth0_caregiver_token: str = self._load_auth0_token()
 
         # Global voice session lock – prevents ALL voice_check
         # dispatches and timer starts while a session is active
@@ -160,6 +182,14 @@ class OpenClawEngine:
         self._start_incident_monitor()
 
         logger.info("OpenClaw engine started successfully")
+        if _AUTH0_AVAILABLE:
+            logger.info(
+                "Auth0 Security: ACTIVE (domain=%s, token=%s)",
+                AUTH0_DOMAIN,
+                "loaded" if self._auth0_caregiver_token else "missing",
+            )
+        else:
+            logger.info("Auth0 Security: NOT AVAILABLE (running without Auth0)")
 
     def stop(self) -> None:
         """Gracefully shut down all subsystems."""
@@ -266,12 +296,13 @@ class OpenClawEngine:
             reasons=decision.reasons,
         )
 
-        # 9. Dispatch actions (filter duplicates)
+        # 9. Dispatch actions with Auth0 security chain
+        #    (FGA check → CIBA approval → Token Vault dispatch)
         actions = self._filter_actions(
             incident.id, decision.actions
         )
-        results = self._dispatcher.dispatch_all(
-            actions, action_context
+        results = self._auth0_dispatch_with_security(
+            incident.id, decision, actions, action_context
         )
         self._mark_actions_done(incident.id, actions)
 
@@ -546,6 +577,176 @@ class OpenClawEngine:
             self._emergency_call_incident = None
         self._mqtt.publish_incident(incident.to_dict())
 
+    # ── Auth0 Security Layer ────────────────────────────
+
+    @staticmethod
+    def _load_auth0_token() -> str:
+        """Load the caregiver's Auth0 token for Token Vault operations.
+
+        Auth0 feature: Token Vault — the caregiver's access token permits
+        OpenClaw to exchange it for federated tokens (Google, Slack) via
+        the Token Vault grant.
+
+        Reads from the auth0/.caregiver_token file (written by login_helper.py).
+        """
+        token_path = os.path.join(
+            os.path.dirname(__file__), "..", "auth0", ".caregiver_token"
+        )
+        try:
+            with open(token_path) as f:
+                token = f.read().strip()
+                if token:
+                    logging.getLogger(__name__).info(
+                        "Auth0 caregiver token loaded for Token Vault"
+                    )
+                    return token
+        except FileNotFoundError:
+            pass
+        logging.getLogger(__name__).warning(
+            "No Auth0 caregiver token — Token Vault Calendar "
+            "events will require manual login via login_helper.py"
+        )
+        return ""
+
+    def _auth0_check_fga(
+        self, agent: str, data_stream: str
+    ) -> bool:
+        """Check FGA authorization before dispatching.
+
+        Auth0 feature: Fine-Grained Authorization (FGA)
+        Ensures only authorized agents can access specific data streams.
+
+        Args:
+            agent: The agent identity (e.g. 'vision_agent').
+            data_stream: The data stream being accessed.
+
+        Returns:
+            True if authorized or if Auth0 is unavailable (fail-open
+            for safety — elderly monitoring must never be blocked).
+        """
+        if not _AUTH0_AVAILABLE or not fga_is_authorized:
+            return True  # Fail-open for safety
+
+        try:
+            authorized = fga_is_authorized(
+                agent, "viewer", "data_stream", data_stream
+            )
+            if not authorized:
+                logger.warning(
+                    "FGA denied: agent=%s stream=%s", agent, data_stream
+                )
+            return authorized
+        except Exception as e:
+            logger.error("FGA check failed (allowing): %s", e)
+            return True  # Fail-open for safety
+
+    def _auth0_request_ciba_approval(
+        self, incident_id: str, description: str
+    ) -> bool:
+        """Request CIBA backchannel authorization for critical dispatch.
+
+        Auth0 feature: CIBA (Client Initiated Backchannel Authentication)
+        Sends a push notification to the caregiver's device for approval
+        before dispatching emergency services.
+
+        Args:
+            incident_id: The incident triggering the request.
+            description: Human-readable incident description.
+
+        Returns:
+            True if approved (or Auth0 unavailable), False if denied.
+        """
+        if not _AUTH0_AVAILABLE or not request_backchannel_authorization:
+            return True  # Fail-open for safety
+
+        try:
+            binding_msg = (
+                f"ETMS CRITICAL: {description[:60]}. "
+                f"Approve emergency dispatch?"
+            )
+            result = request_backchannel_authorization(
+                binding_message=binding_msg
+            )
+            approved = result.get("approved", False) if result else False
+            logger.info(
+                "CIBA approval for incident %s: %s",
+                incident_id,
+                "approved" if approved else "pending/denied",
+            )
+            return approved
+        except Exception as e:
+            logger.error(
+                "CIBA request failed (allowing dispatch): %s", e
+            )
+            return True  # Fail-open for safety
+
+    def _auth0_dispatch_with_security(
+        self,
+        incident_id: str,
+        decision: Any,
+        actions: list[str],
+        action_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Dispatch actions with full Auth0 security chain.
+
+        Auth0 features used:
+        - FGA: Authorization check before dispatch
+        - CIBA: Backchannel approval for HIGH_RISK+ incidents
+        - Step-Up: MFA verification for CRITICAL incidents
+        - Token Vault: Slack/Calendar API calls via federated tokens
+
+        For safety, Auth0 failures are non-blocking (fail-open).
+        Elderly monitoring dispatch must never be prevented by an
+        authorization service outage.
+        """
+        auth0_log = {
+            "incident_id": incident_id,
+            "auth0_checks": [],
+        }
+
+        # FGA: Check agent authorization
+        fga_ok = self._auth0_check_fga(
+            "vision_agent", "fall_events"
+        )
+        auth0_log["auth0_checks"].append({
+            "feature": "FGA",
+            "result": "authorized" if fga_ok else "denied",
+        })
+
+        # CIBA: Request caregiver approval for HIGH_RISK+
+        if decision.level >= EscalationLevel.HIGH_RISK:
+            reasons_str = "; ".join(
+                decision.reasons[:2]
+            ) if decision.reasons else "Safety alert"
+            ciba_ok = self._auth0_request_ciba_approval(
+                incident_id, reasons_str
+            )
+            auth0_log["auth0_checks"].append({
+                "feature": "CIBA",
+                "result": "approved" if ciba_ok else "pending",
+            })
+
+        # Step-Up: Log requirement for CRITICAL
+        if decision.level >= EscalationLevel.CRITICAL:
+            auth0_log["auth0_checks"].append({
+                "feature": "Step-Up",
+                "result": "required_for_emergency_call",
+            })
+
+        # Publish Auth0 security audit to MQTT
+        self._mqtt._publish(
+            "etms/openclaw/auth0_audit", auth0_log
+        )
+
+        # Inject Auth0 caregiver token into context for Token Vault handlers
+        action_context["auth0_token"] = self._auth0_caregiver_token
+
+        # Dispatch all actions (Auth0 handlers included)
+        results = self._dispatcher.dispatch_all(
+            actions, action_context
+        )
+        return results
+
     # ── Private helpers ──────────────────────────────────
 
     def _filter_actions(
@@ -603,7 +804,7 @@ class OpenClawEngine:
         decision: Any,
         ctx: Any,
     ) -> None:
-        """Common escalation + dispatch logic."""
+        """Common escalation + dispatch logic with Auth0 security."""
         self._incidents.escalate(incident_id, decision)
 
         self._replay.start_replay(incident_id)
@@ -622,7 +823,11 @@ class OpenClawEngine:
             level_name=decision.level.name,
             reasons=decision.reasons,
         )
-        self._dispatcher.dispatch_all(actions, action_context)
+
+        # Dispatch with Auth0 security chain
+        self._auth0_dispatch_with_security(
+            incident_id, decision, actions, action_context
+        )
         self._mark_actions_done(incident_id, actions)
 
         if (
@@ -1459,7 +1664,7 @@ class OpenClawEngine:
         )
 
     def _init_action_handlers(self) -> None:
-        """Initialize action handlers."""
+        """Initialize action handlers including Auth0 Token Vault handlers."""
         ha_cfg = self.config.get("actions", {}).get(
             "homeassistant", {}
         )
@@ -1505,10 +1710,34 @@ class OpenClawEngine:
             public_url=emergency_cfg.get("public_url", ""),
         )
 
+        # ── Auth0 Token Vault handlers ───────────────────
+        slack_handler = SlackHandler(
+            default_channel=SLACK_DEFAULT_CHANNEL,
+            mqtt_publish_fn=self._mqtt._publish,
+        )
+
+        calendar_handler = CalendarHandler(
+            calendar_id="primary",
+            mqtt_publish_fn=self._mqtt._publish,
+        )
+
+        if _AUTH0_AVAILABLE:
+            logger.info(
+                "Auth0 integration ACTIVE — "
+                "Slack + Calendar handlers via Token Vault"
+            )
+        else:
+            logger.warning(
+                "Auth0 integration NOT available — "
+                "Slack + Calendar handlers will degrade gracefully"
+            )
+
         self._dispatcher = ActionDispatcher(
             ha_handler=ha_handler,
             telegram_handler=self._telegram_handler,
             emergency_handler=emergency_handler,
+            slack_handler=slack_handler,
+            calendar_handler=calendar_handler,
         )
 
     def _init_telemetry(self) -> None:

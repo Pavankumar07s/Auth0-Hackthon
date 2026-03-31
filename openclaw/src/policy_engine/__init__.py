@@ -151,6 +151,8 @@ class PolicyEngine:
                 "unlock_exits",
                 "activate_siren",
                 "notify_caregiver",
+                "notify_slack",
+                "create_calendar_event",
                 "start_telemetry",
             ])
 
@@ -163,6 +165,8 @@ class PolicyEngine:
                 "unlock_exits",
                 "activate_siren",
                 "notify_caregiver",
+                "notify_slack",
+                "create_calendar_event",
                 "start_telemetry",
             ])
 
@@ -178,6 +182,8 @@ class PolicyEngine:
                     "emergency_call",
                     "send_medical_packet",
                     "notify_caregiver",
+                    "notify_slack",
+                    "create_calendar_event",
                     "start_telemetry",
                 ])
             elif ctx.heart_rate > t.hr_critical_high:
@@ -190,6 +196,8 @@ class PolicyEngine:
                     "emergency_call",
                     "send_medical_packet",
                     "notify_caregiver",
+                    "notify_slack",
+                    "create_calendar_event",
                     "start_telemetry",
                 ])
 
@@ -204,6 +212,8 @@ class PolicyEngine:
                 "emergency_call",
                 "send_medical_packet",
                 "notify_caregiver",
+                "notify_slack",
+                "create_calendar_event",
                 "start_telemetry",
             ])
 
@@ -216,6 +226,8 @@ class PolicyEngine:
                 "send_medical_packet",
                 "unlock_door",
                 "notify_caregiver",
+                "notify_slack",
+                "create_calendar_event",
                 "start_telemetry",
             ])
 
@@ -248,6 +260,8 @@ class PolicyEngine:
                 "unlock_door",
                 "activate_lights",
                 "voice_check",
+                "notify_slack",
+                "create_calendar_event",
             ])
 
         # SpO2 warning range
@@ -261,6 +275,8 @@ class PolicyEngine:
                 "sms_caregiver",
                 "notify_caregiver",
                 "voice_check",
+                "notify_slack",
+                "create_calendar_event",
             ])
 
         # Sustained elevated HR
@@ -335,6 +351,7 @@ class PolicyEngine:
                 "push_notification",
                 "voice_check",
                 "start_monitoring_timer",
+                "notify_slack",
             ])
 
         # Wandering
@@ -344,6 +361,7 @@ class PolicyEngine:
             actions.extend([
                 "push_notification",
                 "start_monitoring_timer",
+                "notify_slack",
             ])
 
         # Behavior anomaly
@@ -434,6 +452,8 @@ class PolicyEngine:
                     "send_medical_packet",
                     "unlock_door",
                     "notify_caregiver",
+                    "notify_slack",
+                    "create_calendar_event",
                     "start_telemetry",
                     "activate_siren",
                 ],
@@ -472,6 +492,8 @@ class PolicyEngine:
                     "send_medical_packet",
                     "unlock_door",
                     "notify_caregiver",
+                    "notify_slack",
+                    "create_calendar_event",
                     "start_telemetry",
                 ],
                 skip_voice_confirmation=True,

@@ -2,10 +2,14 @@ package middleware
 
 import (
 	"context"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -158,7 +162,7 @@ func (m *AuthMiddleware) ValidateToken(tokenString string) (*Claims, error) {
 			return nil, err
 		}
 
-		return jwt.ParseRSAPublicKeyFromPEM(jwkToPEM(jwk))
+		return jwkToRSAPublicKey(jwk)
 	}, jwt.WithIssuer(fmt.Sprintf("https://%s/", m.domain)),
 		jwt.WithAudience(m.audience))
 
@@ -299,15 +303,38 @@ func GetClaims(ctx context.Context) *Claims {
 	return claims
 }
 
-// jwkToPEM converts a JWK to PEM format for RSA public key parsing.
-func jwkToPEM(jwk *JWK) []byte {
-	// For RS256, we need the modulus (n) and exponent (e) in PEM format.
-	// The golang-jwt library handles base64url decoding internally.
-	// We construct a minimal PEM from the JWK components.
-	//
-	// In production, use a proper JWK-to-PEM library like go-jose.
-	// This is a simplified version for the hackathon.
-	return []byte(fmt.Sprintf(`-----BEGIN PUBLIC KEY-----
-%s
------END PUBLIC KEY-----`, jwk.N))
+// jwkToRSAPublicKey converts a JWK to an *rsa.PublicKey.
+//
+// Decodes the base64url-encoded modulus (N) and exponent (E) from the
+// JWK and constructs a proper RSA public key for JWT RS256 verification.
+//
+// Auth0 feature: JWT validation — JWKS-based key resolution.
+func jwkToRSAPublicKey(jwk *JWK) (*rsa.PublicKey, error) {
+	// Decode modulus (N) — base64url without padding
+	nBytes, err := base64.RawURLEncoding.DecodeString(jwk.N)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWK modulus: %w", err)
+	}
+
+	// Decode exponent (E) — base64url without padding
+	eBytes, err := base64.RawURLEncoding.DecodeString(jwk.E)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWK exponent: %w", err)
+	}
+
+	// Convert exponent bytes to int (typically 65537 = AQAB)
+	var eInt int
+	if len(eBytes) <= 4 {
+		// Pad to 4 bytes for binary.BigEndian
+		padded := make([]byte, 4)
+		copy(padded[4-len(eBytes):], eBytes)
+		eInt = int(binary.BigEndian.Uint32(padded))
+	} else {
+		return nil, fmt.Errorf("JWK exponent too large (%d bytes)", len(eBytes))
+	}
+
+	return &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: eInt,
+	}, nil
 }
