@@ -165,8 +165,19 @@ def test_token_vault() -> None:
 
         user_token = os.getenv("AUTH0_CAREGIVER_TOKEN", "")
 
+        # Auto-load from saved token file if env var not set
+        if not user_token:
+            token_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+            for fname in (".caregiver_token", ".caregiver_token_google", ".caregiver_token_slack"):
+                fpath = os.path.join(token_dir, fname)
+                if os.path.exists(fpath):
+                    with open(fpath) as f:
+                        user_token = f.read().strip()
+                    if user_token:
+                        break
+
         if AUTO_MODE and not user_token:
-            results.record("Token Vault: token", "SKIP", "No AUTH0_CAREGIVER_TOKEN in auto mode")
+            results.record("Token Vault: token", "SKIP", "No token found (run login_helper.py first)")
             return
 
         if not user_token:

@@ -180,6 +180,79 @@ def _get_identity_token_via_mgmt_api(
         return None
 
 
+def _search_any_user_for_connection(connection: str) -> Optional[str]:
+    """Search ALL Auth0 users for one with the given connection and
+    return its upstream access token.
+
+    This is Strategy 3b — handles the case where the saved JWT belongs
+    to a different identity provider than the one we need.  For example,
+    the refresh token file holds a Slack user's token but we need the
+    Google Calendar identity.
+
+    Auth0 feature: Management API — List Users by connection
+
+    Args:
+        connection: The connection name (e.g. ``google-oauth2``).
+
+    Returns:
+        The upstream provider access token, or ``None``.
+    """
+    mgmt_token = _get_m2m_token()
+    if not mgmt_token:
+        return None
+
+    # Determine correct search query based on connection type
+    if connection == "google-oauth2":
+        query = 'identities.provider:"google-oauth2"'
+    elif connection == "sign-in-with-slack":
+        query = 'identities.connection:"sign-in-with-slack"'
+    else:
+        query = f'identities.connection:"{connection}"'
+
+    try:
+        with httpx.Client() as client:
+            resp = client.get(
+                f"https://{AUTH0_DOMAIN}/api/v2/users",
+                headers={"Authorization": f"Bearer {mgmt_token}"},
+                params={
+                    "q": query,
+                    "search_engine": "v3",
+                    "fields": "user_id,identities",
+                    "per_page": "5",
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "[TokenVault] Management API user search failed: %s",
+                    resp.status_code,
+                )
+                return None
+
+            for user in resp.json():
+                for identity in user.get("identities", []):
+                    if (
+                        identity.get("connection") == connection
+                        or identity.get("provider") == connection
+                    ):
+                        token = identity.get("access_token")
+                        if token:
+                            logger.info(
+                                "[TokenVault] Management API search: found %s token "
+                                "via user %s (Auth0-managed, never stored locally)",
+                                connection,
+                                user.get("user_id", "unknown"),
+                            )
+                            return token
+
+            logger.warning(
+                "[TokenVault] No user found with connection=%s", connection
+            )
+            return None
+    except httpx.HTTPError as e:
+        logger.error("[TokenVault] Management API search HTTP error: %s", e)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -286,6 +359,10 @@ def exchange_token_for_connection(
         logger.error("[TokenVault] Access-token exchange HTTP error: %s", e)
 
     # --- Strategy 3: Management API fallback ---
+    # First try the user from the JWT, then search ALL users for the
+    # target connection.  This handles the case where the saved token
+    # belongs to a different identity provider (e.g. Slack user token
+    # but we need the Google Calendar identity).
     claims = _decode_jwt_payload(user_token)
     if claims and "sub" in claims:
         user_id = claims["sub"]
@@ -294,11 +371,16 @@ def exchange_token_for_connection(
             user_id,
             connection,
         )
-        return _get_identity_token_via_mgmt_api(user_id, connection)
-    else:
-        logger.warning(
-            "[TokenVault] Could not extract user ID from JWT for Management API fallback"
-        )
+        token = _get_identity_token_via_mgmt_api(user_id, connection)
+        if token:
+            return token
+
+    # Strategy 3b: Search for ANY user that has this connection.
+    # Needed when multiple Auth0 users exist (one per social login)
+    # and the saved token belongs to a different provider.
+    token = _search_any_user_for_connection(connection)
+    if token:
+        return token
 
     logger.error(
         "[TokenVault] All token exchange strategies exhausted for connection=%s",

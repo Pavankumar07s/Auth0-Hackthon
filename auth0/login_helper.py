@@ -196,17 +196,33 @@ def _exchange_code_for_tokens(
         return None
 
 
-def _save_tokens(tokens: dict) -> None:
-    """Save access token and refresh token to disk."""
+def _save_tokens(tokens: dict, connection_key: str = "") -> None:
+    """Save access token and refresh token to disk.
+
+    Saves to the primary file AND a per-connection file so that
+    sequential logins (google then slack) don't overwrite each other.
+    """
     if tokens.get("access_token"):
         with open(ACCESS_TOKEN_PATH, "w") as f:
             f.write(tokens["access_token"])
         logger.info(f"  ✅ Access token saved to {os.path.basename(ACCESS_TOKEN_PATH)}")
+        # Also save per-connection token file
+        if connection_key:
+            conn_path = os.path.join(TOKEN_DIR, f".caregiver_token_{connection_key}")
+            with open(conn_path, "w") as f:
+                f.write(tokens["access_token"])
+            logger.info(f"  ✅ Per-connection token saved to {os.path.basename(conn_path)}")
 
     if tokens.get("refresh_token"):
         with open(REFRESH_TOKEN_PATH, "w") as f:
             f.write(tokens["refresh_token"])
         logger.info(f"  ✅ Refresh token saved to {os.path.basename(REFRESH_TOKEN_PATH)}")
+        # Also save per-connection refresh token
+        if connection_key:
+            conn_rt_path = os.path.join(TOKEN_DIR, f".caregiver_refresh_token_{connection_key}")
+            with open(conn_rt_path, "w") as f:
+                f.write(tokens["refresh_token"])
+            logger.info(f"  ✅ Per-connection refresh token saved to {os.path.basename(conn_rt_path)}")
     else:
         logger.warning("  ⚠️  No refresh token received — offline_access may not be enabled")
 
@@ -501,8 +517,8 @@ def login_with_connection(connection_key: str) -> bool:
     if not tokens:
         return False
 
-    # Save tokens
-    _save_tokens(tokens)
+    # Save tokens (per-connection + primary)
+    _save_tokens(tokens, connection_key=connection_key)
 
     # Verify Token Vault exchange (3-strategy fallback)
     success, upstream_token, strategy = _verify_token_vault_exchange(
