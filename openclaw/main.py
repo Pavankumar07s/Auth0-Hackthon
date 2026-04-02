@@ -662,7 +662,8 @@ class OpenClawEngine:
         try:
             caregiver_id = os.environ.get(
                 "AUTH0_CAREGIVER_ID",
-                os.environ.get("AUTH0_CAREGIVER_EMAIL", "caregiver@etms.local"),
+                # Default to Google user ID for CIBA (iss_sub format required)
+                os.environ.get("AUTH0_CAREGIVER_EMAIL", "google-oauth2|110712621711109566344"),
             )
             incident_context = {
                 "elder_name": self._medical.name

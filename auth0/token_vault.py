@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 _REFRESH_TOKEN_PATH = os.path.join(os.path.dirname(__file__), ".caregiver_refresh_token")
 
+# Google OAuth token endpoint (for direct refresh when Mgmt API token is stale)
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -114,6 +117,127 @@ def _get_m2m_token() -> Optional[str]:
         return None
 
 
+def _get_google_connection_creds(mgmt_token: str) -> tuple[Optional[str], Optional[str]]:
+    """Retrieve Google OAuth client_id and client_secret from the Auth0
+    Google connection configuration.
+
+    Auth0 feature: Management API — Get Connection (to read upstream
+    OAuth credentials for direct token refresh).
+
+    Args:
+        mgmt_token: A valid Management API access token.
+
+    Returns:
+        Tuple of (google_client_id, google_client_secret) or (None, None).
+    """
+    try:
+        with httpx.Client() as client:
+            resp = client.get(
+                f"https://{AUTH0_DOMAIN}/api/v2/connections",
+                headers={"Authorization": f"Bearer {mgmt_token}"},
+                params={"strategy": "google-oauth2", "fields": "options", "include_fields": "true"},
+            )
+            if resp.status_code == 200:
+                conns = resp.json()
+                if conns:
+                    opts = conns[0].get("options", {})
+                    return opts.get("client_id"), opts.get("client_secret")
+    except httpx.HTTPError:
+        pass
+    return None, None
+
+
+def _refresh_google_access_token(
+    google_refresh_token: str, mgmt_token: str
+) -> Optional[str]:
+    """Use Google's refresh token to get a fresh access token directly
+    from Google's OAuth endpoint.
+
+    Auth0 stores the upstream Google refresh token in the user identity.
+    When the stored access token expires (1-hour lifetime), we use this
+    refresh token together with the Google client credentials (stored in
+    the Auth0 connection config) to obtain a fresh access token.
+
+    Auth0 features used:
+      - Management API (to read Google client credentials from connection)
+      - Connected Accounts (Auth0 stores the upstream refresh token)
+
+    Args:
+        google_refresh_token: The upstream Google refresh token from Auth0 identity.
+        mgmt_token: A valid Management API access token.
+
+    Returns:
+        A fresh Google access token, or ``None`` on failure.
+    """
+    g_client_id, g_client_secret = _get_google_connection_creds(mgmt_token)
+    if not g_client_id or not g_client_secret:
+        logger.warning("[TokenVault] Could not retrieve Google connection credentials")
+        return None
+
+    try:
+        with httpx.Client() as client:
+            resp = client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": google_refresh_token,
+                    "client_id": g_client_id,
+                    "client_secret": g_client_secret,
+                },
+            )
+            if resp.status_code == 200:
+                fresh_token = resp.json().get("access_token")
+                if fresh_token:
+                    logger.info(
+                        "[TokenVault] Refreshed Google access token directly "
+                        "via upstream OAuth (Auth0-managed refresh token)"
+                    )
+                    return fresh_token
+            logger.warning(
+                "[TokenVault] Google token refresh failed: %s %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+    except httpx.HTTPError as e:
+        logger.error("[TokenVault] Google token refresh HTTP error: %s", e)
+    return None
+
+
+def _extract_token_from_identity(
+    identity: dict, connection: str, mgmt_token: str
+) -> Optional[str]:
+    """Extract a usable access token from an Auth0 identity entry.
+
+    If the stored access token is for Google and appears expired,
+    automatically refreshes it using the stored upstream refresh token.
+
+    Args:
+        identity: A single entry from the user's ``identities`` array.
+        connection: The connection name being queried.
+        mgmt_token: Management API token (for Google cred lookup).
+
+    Returns:
+        A valid upstream access token, or ``None``.
+    """
+    access_token = identity.get("access_token")
+    refresh_token = identity.get("refresh_token")
+    provider = identity.get("provider", identity.get("connection", ""))
+
+    if not access_token and not refresh_token:
+        return None
+
+    # For Google: always refresh via upstream token to avoid expired tokens.
+    # Google access tokens expire after 1 hour; the stored token from the
+    # Management API is often stale.
+    if provider == "google-oauth2" and refresh_token and mgmt_token:
+        fresh = _refresh_google_access_token(refresh_token, mgmt_token)
+        if fresh:
+            return fresh
+        # Fall through to stored token as last resort
+
+    return access_token
+
+
 def _get_identity_token_via_mgmt_api(
     user_id: str, connection: str
 ) -> Optional[str]:
@@ -123,6 +247,9 @@ def _get_identity_token_via_mgmt_api(
     This is a fallback for when the Token Vault exchange endpoint is
     unavailable (e.g. Connected Accounts not enabled on tenant).
     The provider token is Auth0-managed and never stored locally.
+
+    For Google connections, if the stored access token is expired,
+    automatically refreshes it using the upstream Google refresh token.
 
     Auth0 feature: Management API — Get User (identity provider tokens)
 
@@ -155,7 +282,7 @@ def _get_identity_token_via_mgmt_api(
             identities = resp.json().get("identities", [])
             for identity in identities:
                 if identity.get("connection") == connection or identity.get("provider") == connection:
-                    token = identity.get("access_token")
+                    token = _extract_token_from_identity(identity, connection, mgmt_token)
                     if token:
                         logger.info(
                             "[TokenVault] Management API fallback: retrieved %s token "
@@ -164,7 +291,7 @@ def _get_identity_token_via_mgmt_api(
                         )
                         return token
                     logger.warning(
-                        "[TokenVault] Identity found for %s but no access_token present",
+                        "[TokenVault] Identity found for %s but no usable token",
                         connection,
                     )
                     return None
@@ -234,7 +361,9 @@ def _search_any_user_for_connection(connection: str) -> Optional[str]:
                         identity.get("connection") == connection
                         or identity.get("provider") == connection
                     ):
-                        token = identity.get("access_token")
+                        token = _extract_token_from_identity(
+                            identity, connection, mgmt_token
+                        )
                         if token:
                             logger.info(
                                 "[TokenVault] Management API search: found %s token "
