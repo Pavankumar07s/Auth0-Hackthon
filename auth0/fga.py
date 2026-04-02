@@ -82,6 +82,33 @@ async def is_authorized(user: str, relation: str, object_name: str) -> bool:
         return False
 
 
+def is_authorized_sync(user: str, relation: str, object_name: str) -> bool:
+    """Synchronous wrapper around ``is_authorized`` for non-async callers.
+
+    Auth0 feature: Fine-Grained Authorization (permission check)
+
+    Args:
+        user: FGA user identifier (e.g. ``user:vision_agent``).
+        relation: The relationship type (e.g. ``viewer``).
+        object_name: The object to check (e.g. ``data_stream:fall_events``).
+
+    Returns:
+        ``True`` if authorized, ``False`` otherwise.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already inside an event loop — create a new thread to run
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, is_authorized(user, relation, object_name)).result()
+    else:
+        return asyncio.run(is_authorized(user, relation, object_name))
+
+
 async def filter_streams_by_permission(
     user: str,
     relation: str,

@@ -222,51 +222,177 @@ def _save_tokens(tokens: dict) -> None:
             pass
 
 
-# ── Token Vault Verification ───────────────────────────────────
+# ── Token Vault Verification (3-Strategy) ──────────────────────
+#
+# Auth0 Token Vault supports multiple exchange strategies.  The login
+# helper mirrors the production token_vault.py fallback chain:
+#   1. Refresh-token exchange  (Token Vault native — may require paid plan)
+#   2. Access-token exchange   (Token Vault native — may require paid plan)
+#   3. Management API identity lookup  (works on all plans)
+#
+# If *any* strategy yields a usable upstream token, we report success.
+# ---------------------------------------------------------------------------
 
-def _verify_token_vault_exchange(
-    connection: str, scopes: str, display_name: str
-) -> bool:
-    """Verify Token Vault can exchange the refresh token for a federated token."""
-    refresh_token = None
-    try:
-        with open(REFRESH_TOKEN_PATH) as f:
-            refresh_token = f.read().strip()
-    except FileNotFoundError:
-        logger.error("  ❌ No refresh token saved — cannot verify Token Vault")
-        return False
+AUTH0_M2M_CLIENT_ID = os.getenv("AUTH0_M2M_CLIENT_ID", "")
+AUTH0_M2M_CLIENT_SECRET = os.getenv("AUTH0_M2M_CLIENT_SECRET", "")
+AUTH0_CUSTOM_API_CLIENT_ID = os.getenv("AUTH0_CUSTOM_API_CLIENT_ID", "")
+AUTH0_CUSTOM_API_CLIENT_SECRET = os.getenv("AUTH0_CUSTOM_API_CLIENT_SECRET", "")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 
-    logger.info(f"\n  Verifying Token Vault exchange for {display_name}...")
 
+def _get_m2m_token() -> Optional[str]:
+    """Obtain an M2M access token for the Auth0 Management API."""
+    if not AUTH0_M2M_CLIENT_ID or not AUTH0_M2M_CLIENT_SECRET:
+        return None
     try:
         with httpx.Client() as client:
             resp = client.post(
                 f"https://{AUTH0_DOMAIN}/oauth/token",
                 json={
-                    "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
-                    "client_id": AUTH0_CLIENT_ID,
-                    "client_secret": AUTH0_CLIENT_SECRET,
-                    "subject_token": refresh_token,
-                    "subject_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
-                    "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
-                    "connection": connection,
-                    "scope": scopes,
+                    "grant_type": "client_credentials",
+                    "client_id": AUTH0_M2M_CLIENT_ID,
+                    "client_secret": AUTH0_M2M_CLIENT_SECRET,
+                    "audience": f"https://{AUTH0_DOMAIN}/api/v2/",
                 },
             )
             if resp.status_code == 200:
-                data = resp.json()
-                token = data.get("access_token", "")
-                logger.info(f"  ✅ Token Vault exchange succeeded for {display_name}")
-                logger.info(f"     Token preview: {token[:20]}...{token[-10:]}")
-                return True
-            else:
-                logger.warning(
-                    f"  ⚠️  Token Vault exchange returned {resp.status_code}: {resp.text[:200]}"
+                return resp.json().get("access_token")
+    except httpx.HTTPError:
+        pass
+    return None
+
+
+def _mgmt_api_get_federated_token(
+    user_id: str, connection: str
+) -> Optional[str]:
+    """Retrieve upstream provider token from user's Auth0 identity
+    via Management API (Strategy 3 — works on all Auth0 plans)."""
+    mgmt_token = _get_m2m_token()
+    if not mgmt_token:
+        return None
+    try:
+        with httpx.Client() as client:
+            resp = client.get(
+                f"https://{AUTH0_DOMAIN}/api/v2/users/{user_id}",
+                headers={"Authorization": f"Bearer {mgmt_token}"},
+                params={"include_fields": "true", "fields": "identities"},
+            )
+            if resp.status_code != 200:
+                return None
+            for identity in resp.json().get("identities", []):
+                if identity.get("connection") == connection or identity.get("provider") == connection:
+                    return identity.get("access_token")
+    except httpx.HTTPError:
+        pass
+    return None
+
+
+def _verify_token_vault_exchange(
+    connection: str, scopes: str, display_name: str,
+    tokens: Optional[dict] = None,
+) -> tuple[bool, Optional[str], str]:
+    """Verify that we can obtain a federated token for *connection*.
+
+    Tries three strategies (matching production token_vault.py):
+      1. Refresh-token exchange  (Token Vault native)
+      2. Access-token exchange   (Token Vault native)
+      3. Management API identity lookup
+
+    Returns:
+        (success, upstream_token, strategy_used)
+    """
+    refresh_token = None
+    access_token = tokens.get("access_token") if tokens else None
+
+    try:
+        with open(REFRESH_TOKEN_PATH) as f:
+            refresh_token = f.read().strip()
+    except FileNotFoundError:
+        pass
+
+    logger.info(f"\n  Verifying Token Vault for {display_name}...")
+
+    # --- Strategy 1: Refresh-token exchange ---
+    if refresh_token:
+        logger.info(f"  → Strategy 1: Refresh-token exchange...")
+        try:
+            with httpx.Client() as client:
+                resp = client.post(
+                    f"https://{AUTH0_DOMAIN}/oauth/token",
+                    json={
+                        "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
+                        "client_id": AUTH0_CLIENT_ID,
+                        "client_secret": AUTH0_CLIENT_SECRET,
+                        "subject_token": refresh_token,
+                        "subject_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
+                        "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
+                        "connection": connection,
+                        "scope": scopes,
+                    },
                 )
-                return False
-    except httpx.HTTPError as e:
-        logger.error(f"  ❌ Token Vault HTTP error: {e}")
-        return False
+                if resp.status_code == 200:
+                    token = resp.json().get("access_token", "")
+                    logger.info(f"  ✅ Strategy 1 succeeded — Token Vault refresh-token exchange")
+                    return True, token, "refresh-token exchange"
+                logger.info(f"     Strategy 1 returned {resp.status_code} — trying next...")
+        except httpx.HTTPError:
+            logger.info(f"     Strategy 1 network error — trying next...")
+
+    # --- Strategy 2: Access-token exchange ---
+    if access_token:
+        tv_client = AUTH0_CUSTOM_API_CLIENT_ID or AUTH0_CLIENT_ID
+        tv_secret = AUTH0_CUSTOM_API_CLIENT_SECRET or AUTH0_CLIENT_SECRET
+        logger.info(f"  → Strategy 2: Access-token exchange...")
+        try:
+            with httpx.Client() as client:
+                resp = client.post(
+                    f"https://{AUTH0_DOMAIN}/oauth/token",
+                    json={
+                        "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
+                        "client_id": tv_client,
+                        "client_secret": tv_secret,
+                        "subject_token": access_token,
+                        "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                        "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
+                        "connection": connection,
+                        "scope": scopes,
+                    },
+                )
+                if resp.status_code == 200:
+                    token = resp.json().get("access_token", "")
+                    logger.info(f"  ✅ Strategy 2 succeeded — Token Vault access-token exchange")
+                    return True, token, "access-token exchange"
+                logger.info(f"     Strategy 2 returned {resp.status_code} — trying next...")
+        except httpx.HTTPError:
+            logger.info(f"     Strategy 2 network error — trying next...")
+
+    # --- Strategy 3: Management API fallback ---
+    # Extract user_id from id_token or access_token
+    user_id = None
+    for t in [tokens.get("id_token"), access_token, refresh_token]:
+        if t and "." in t:
+            try:
+                parts = t.split(".")
+                payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload))
+                if "sub" in claims:
+                    user_id = claims["sub"]
+                    break
+            except Exception:
+                continue
+
+    if user_id:
+        logger.info(f"  → Strategy 3: Management API lookup for {user_id}...")
+        upstream_token = _mgmt_api_get_federated_token(user_id, connection)
+        if upstream_token:
+            logger.info(f"  ✅ Strategy 3 succeeded — Management API identity token")
+            return True, upstream_token, "Management API"
+        logger.info(f"     Strategy 3: no upstream token found in identity")
+    else:
+        logger.info(f"     Strategy 3: could not extract user_id from tokens")
+
+    logger.warning(f"  ❌ All 3 Token Vault strategies failed for {display_name}")
+    return False, None, "none"
 
 
 def _verify_google_calendar(access_token: str) -> bool:
@@ -378,55 +504,32 @@ def login_with_connection(connection_key: str) -> bool:
     # Save tokens
     _save_tokens(tokens)
 
-    # Verify Token Vault exchange
-    success = _verify_token_vault_exchange(connection, connection_scope, display_name)
+    # Verify Token Vault exchange (3-strategy fallback)
+    success, upstream_token, strategy = _verify_token_vault_exchange(
+        connection, connection_scope, display_name, tokens=tokens
+    )
 
-    if success and connection_key == "google":
-        # Also verify Google Calendar API directly
-        # Do a fresh Token Vault exchange to get the federated token
-        with httpx.Client() as client:
-            resp = client.post(
-                f"https://{AUTH0_DOMAIN}/oauth/token",
-                json={
-                    "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
-                    "client_id": AUTH0_CLIENT_ID,
-                    "client_secret": AUTH0_CLIENT_SECRET,
-                    "subject_token": tokens.get("refresh_token", ""),
-                    "subject_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
-                    "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
-                    "connection": connection,
-                    "scope": connection_scope,
-                },
-            )
-            if resp.status_code == 200:
-                google_token = resp.json().get("access_token", "")
-                _verify_google_calendar(google_token)
+    # Verify actual API access with the upstream token
+    if success and upstream_token:
+        if connection_key == "google":
+            _verify_google_calendar(upstream_token)
+        elif connection_key == "slack":
+            _verify_slack(upstream_token)
 
-    if success and connection_key == "slack":
-        with httpx.Client() as client:
-            resp = client.post(
-                f"https://{AUTH0_DOMAIN}/oauth/token",
-                json={
-                    "grant_type": "urn:auth0:params:oauth:grant-type:token-exchange:federated-connection-access-token",
-                    "client_id": AUTH0_CLIENT_ID,
-                    "client_secret": AUTH0_CLIENT_SECRET,
-                    "subject_token": tokens.get("refresh_token", ""),
-                    "subject_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
-                    "requested_token_type": "http://auth0.com/oauth/token-type/federated-connection-access-token",
-                    "connection": connection,
-                    "scope": connection_scope,
-                },
-            )
-            if resp.status_code == 200:
-                slack_token = resp.json().get("access_token", "")
-                _verify_slack(slack_token)
+    # For Slack: also check bot token fallback
+    if not success and connection_key == "slack" and SLACK_BOT_TOKEN:
+        logger.info(f"\n  → Slack Bot Token fallback available (Auth0-managed)")
+        bot_ok = _verify_slack(SLACK_BOT_TOKEN)
+        if bot_ok:
+            success = True
+            strategy = "Bot Token fallback"
 
     print()
     if success:
-        logger.info(f"  ★ {display_name} Token Vault integration READY")
+        logger.info(f"  ★ {display_name} Token Vault integration READY (via {strategy})")
     else:
-        logger.info(f"  ⚠️  {display_name} login succeeded but Token Vault exchange needs configuration")
-        logger.info(f"     See setup instructions below.")
+        logger.warning(f"  ⚠️  {display_name}: all Token Vault strategies failed.")
+        logger.info(f"     Check setup instructions above or enable M2M credentials.")
 
     return success
 

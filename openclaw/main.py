@@ -54,7 +54,7 @@ _AUTH0_AVAILABLE = False
 try:
     import sys as _sys
     _sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from auth0.fga import is_authorized as fga_is_authorized
+    from auth0.fga import is_authorized_sync as fga_is_authorized
     from auth0.ciba import request_backchannel_authorization
     from auth0.step_up import verify_step_up_satisfied
     from auth0.config import AUTH0_DOMAIN, SLACK_DEFAULT_CHANNEL
@@ -629,7 +629,7 @@ class OpenClawEngine:
 
         try:
             authorized = fga_is_authorized(
-                agent, "viewer", "data_stream", data_stream
+                f"user:{agent}", "viewer", f"data_stream:{data_stream}"
             )
             if not authorized:
                 logger.warning(
@@ -660,18 +660,36 @@ class OpenClawEngine:
             return True  # Fail-open for safety
 
         try:
-            binding_msg = (
-                f"ETMS CRITICAL: {description[:60]}. "
-                f"Approve emergency dispatch?"
+            caregiver_id = os.environ.get(
+                "AUTH0_CAREGIVER_ID",
+                os.environ.get("AUTH0_CAREGIVER_EMAIL", "caregiver@etms.local"),
             )
-            result = request_backchannel_authorization(
-                binding_message=binding_msg
+            incident_context = {
+                "elder_name": self._medical.name
+                if hasattr(self, "_medical") and self._medical
+                else "Unknown",
+                "location": "home",
+                "event_type": description[:60],
+                "vitals_summary": "see incident details",
+            }
+            auth_req_id = request_backchannel_authorization(
+                caregiver_id, incident_context
             )
-            approved = result.get("approved", False) if result else False
+            if not auth_req_id:
+                logger.warning(
+                    "CIBA: could not initiate for incident %s — allowing dispatch",
+                    incident_id,
+                )
+                return True  # Fail-open for safety
+
+            from auth0.ciba import poll_for_approval
+
+            approved, reason, _token = poll_for_approval(auth_req_id, timeout=30)
             logger.info(
-                "CIBA approval for incident %s: %s",
+                "CIBA approval for incident %s: %s (reason=%s)",
                 incident_id,
-                "approved" if approved else "pending/denied",
+                "approved" if approved else "denied/timeout",
+                reason,
             )
             return approved
         except Exception as e:
@@ -1516,7 +1534,7 @@ class OpenClawEngine:
         """Load YAML configuration and overlay environment secrets."""
         # Load .env from project root
         env_path = Path(__file__).parent / ".env"
-        load_dotenv(env_path)
+        load_dotenv(env_path, override=True)
 
         config_path = Path(path)
         if not config_path.exists():
