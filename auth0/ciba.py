@@ -105,7 +105,7 @@ def request_backchannel_authorization(
             "location": location,
             "event_type": event_type,
             "vitals": vitals,
-            "timeout_action": f"If denied or timeout: auto-escalate in {CIBA_TIMEOUT_SECONDS}s",
+            "timeout_action": "If no response within 30s: auto-escalate to emergency services",
         }
     ])
 
@@ -211,8 +211,8 @@ def poll_for_approval(
                     logger.warning("[CIBA] Caregiver DENIED. Auto-escalating.")
                     return False, "denied", None
                 elif error == "expired_token":
-                    logger.warning("[CIBA] CIBA request expired. Auto-escalating.")
-                    return False, "expired", None
+                    logger.warning("[CIBA] CIBA request expired. Auto-escalating — emergency proceeds (safety override).")
+                    return True, "expired_escalate", None
                 else:
                     logger.error("[CIBA] Unexpected error: %s. Auto-escalating.", error)
                     return False, error, None
@@ -221,8 +221,8 @@ def poll_for_approval(
             logger.error("[CIBA] Polling HTTP error: %s. Retrying...", e)
             continue
 
-    logger.warning("[CIBA] Timeout reached (%ds). Auto-escalating.", timeout)
-    return False, "timeout", None
+    logger.warning("[CIBA] Timeout reached (%ds). Auto-escalating — emergency proceeds (safety override).", timeout)
+    return True, "timeout_escalate", None
 
 
 def critical_dispatch_with_approval(
