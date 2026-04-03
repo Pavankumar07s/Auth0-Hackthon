@@ -502,8 +502,12 @@ class OpenClawEngine:
                 level_name=updated.level.name,
                 reasons=updated.reasons,
             )
-            self._dispatcher.dispatch_all(
-                actions, action_context
+            # Route through Auth0 security chain (CIBA gating
+            # for emergency_call, Token Vault for Slack/Calendar).
+            # Previously this called dispatcher.dispatch_all()
+            # directly, bypassing CIBA authorization.
+            self._auth0_dispatch_with_security(
+                incident_id, updated, actions, action_context
             )
             self._mark_actions_done(incident_id, actions)
 
@@ -686,10 +690,15 @@ class OpenClawEngine:
             from auth0.ciba import poll_for_approval
 
             approved, reason, _token = poll_for_approval(auth_req_id, timeout=30)
+            # CIBA poll returns:
+            #   approved=True  → caregiver approved OR timeout
+            #     (timeout = auto-escalate for safety)
+            #   approved=False → caregiver explicitly denied
             logger.info(
-                "CIBA approval for incident %s: %s (reason=%s)",
+                "CIBA result for incident %s: approved=%s reason=%s "
+                "(timeout/expired → auto-escalate, denied → block emergency_call)",
                 incident_id,
-                "approved" if approved else "denied/timeout",
+                approved,
                 reason,
             )
             return approved
@@ -733,6 +742,13 @@ class OpenClawEngine:
         })
 
         # CIBA: Request caregiver approval for HIGH_RISK+
+        # The guardian gets a 30-second window to approve/deny the
+        # emergency call via Auth0 CIBA push notification.
+        #   - APPROVED  → emergency_call proceeds immediately
+        #   - DENIED    → emergency_call is removed from actions
+        #   - TIMEOUT   → auto-escalate: emergency_call proceeds
+        #                  (safety-first: no response = send help)
+        ciba_ok = True  # Default: approved (no CIBA needed)
         if decision.level >= EscalationLevel.HIGH_RISK:
             reasons_str = "; ".join(
                 decision.reasons[:2]
@@ -742,8 +758,20 @@ class OpenClawEngine:
             )
             auth0_log["auth0_checks"].append({
                 "feature": "CIBA",
-                "result": "approved" if ciba_ok else "pending",
+                "result": "approved" if ciba_ok else "denied",
             })
+
+            if not ciba_ok:
+                # Guardian explicitly denied — remove emergency_call
+                # but keep all other actions (Slack alert, calendar, etc.)
+                logger.info(
+                    "CIBA: Guardian DENIED emergency dispatch for "
+                    "incident %s — removing emergency_call from actions",
+                    incident_id,
+                )
+                actions = [
+                    a for a in actions if a != "emergency_call"
+                ]
 
         # Step-Up: Log requirement for CRITICAL
         if decision.level >= EscalationLevel.CRITICAL:
@@ -1017,9 +1045,9 @@ class OpenClawEngine:
                 _end_voice_session()
                 return
 
-            # ── 20-second polling window ──
-            # If no positive confirmation within 20 s → call
-            poll_seconds = 20
+            # ── 30-second polling window ──
+            # If no positive confirmation within 30 s → call
+            poll_seconds = 30
             remaining = poll_seconds
             while remaining > 0:
                 # ── Check MQTT-pushed voice response first ──
