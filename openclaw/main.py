@@ -114,6 +114,12 @@ class OpenClawEngine:
         self._emergency_call_active = False
         self._emergency_call_incident: str | None = None
 
+        # CIBA approval cooldown — once the guardian approves,
+        # don't spam them again for subsequent incidents within
+        # the cooldown window (default: 5 minutes)
+        self._ciba_last_approval_time: float = 0.0
+        self._ciba_cooldown_seconds: int = 300  # 5 minutes
+
         # Incident monitoring (periodic Telegram updates)
         self._monitor_thread: threading.Thread | None = None
         self._monitored_incidents: set[str] = set()
@@ -653,6 +659,11 @@ class OpenClawEngine:
         Sends a push notification to the caregiver's device for approval
         before dispatching emergency services.
 
+        Includes a cooldown cache: if the guardian already approved within
+        the last 5 minutes, the approval is reused without sending another
+        push notification. This prevents spamming the guardian with
+        repeated approval requests during rapid incident escalation.
+
         Args:
             incident_id: The incident triggering the request.
             description: Human-readable incident description.
@@ -662,6 +673,21 @@ class OpenClawEngine:
         """
         if not _AUTH0_AVAILABLE or not request_backchannel_authorization:
             return True  # Fail-open for safety
+
+        # ── Cooldown check ──
+        # If the guardian approved recently, reuse the approval.
+        # No need to spam them with pushes for every incident.
+        elapsed = time.time() - self._ciba_last_approval_time
+        if elapsed < self._ciba_cooldown_seconds:
+            remaining = int(self._ciba_cooldown_seconds - elapsed)
+            logger.info(
+                "CIBA: Reusing recent guardian approval for incident %s "
+                "(approved %ds ago, cooldown %ds remaining)",
+                incident_id,
+                int(elapsed),
+                remaining,
+            )
+            return True
 
         try:
             caregiver_id = os.environ.get(
@@ -701,6 +727,15 @@ class OpenClawEngine:
                 approved,
                 reason,
             )
+
+            # Cache successful approvals to avoid spamming guardian
+            if approved:
+                self._ciba_last_approval_time = time.time()
+                logger.info(
+                    "CIBA: Guardian approval cached for %ds cooldown",
+                    self._ciba_cooldown_seconds,
+                )
+
             return approved
         except Exception as e:
             logger.error(

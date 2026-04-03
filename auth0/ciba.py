@@ -110,7 +110,10 @@ def request_backchannel_authorization(
     ])
 
     # Binding message shown on Guardian push (Auth0 CIBA limit: 64 chars)
-    binding_message = f"ETMS: {elder_name} - {event_type} at {location}"
+    # Auth0 only allows: alphanumerics, whitespace, and +-_.,:#
+    import re as _re
+    raw_binding = f"ETMS: {elder_name} - {event_type} at {location}"
+    binding_message = _re.sub(r"[^a-zA-Z0-9\s+\-_.,:#]", "", raw_binding)
     if len(binding_message) > 64:
         binding_message = binding_message[:61] + "..."
 
